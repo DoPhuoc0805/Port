@@ -1,0 +1,223 @@
+---
+title: "Untitled"
+author: "Do Quang Phuoc"
+date: "`r Sys.Date()`"
+output: word_document
+---
+```{r}
+library(ggplot2)
+library(scales)
+library(corrplot)
+library(dplyr)
+library(Information)
+library(caret)
+library(scorecard)
+library(ROSE)
+library(devtools)
+library(InformationValue)
+library(ROCR)
+```
+
+```{r}
+df=read.csv("C:/Data/Copy of default of credit card clients.csv")
+head(df)
+summary(df)
+```
+```{r}
+ggplot(df, aes(x = LIMIT_BAL)) +
+  geom_histogram(binwidth = 20000, fill = "#00BFC4", color = "white", alpha = 1) +  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Phân phối hạn mức tín dụng (LIMIT_BAL)",
+    x = "Hạn mức tín dụng (NTD)",
+    y = "Số lượng khách hàng"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.title = element_text(size = 12)
+  )
+```
+```{r}
+ggplot(df, aes(x = factor(default.payment.next.month))) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Phân phối vỡ nợ", x = "Vỡ nợ (0 = Không, 1 = Có)", y = "Số lượng")
+```
+```{r}
+ggplot(df, aes(x = AGE)) +
+  geom_histogram(bins = 20, fill = "skyblue", color = "white") +
+  labs(title = "Phân phối độ tuổi", x = "Tuổi", y = "Tần suất")
+```
+```{r}
+ggplot(df, aes(x = factor(`default.payment.next.month`), y = LIMIT_BAL)) +
+  geom_boxplot(fill = "lightgreen") +
+  labs(title = "Hạn mức tín dụng theo tình trạng vỡ nợ", x = "Vỡ nợ", y = "Hạn mức tín dụng")
+
+```
+```{r}
+
+pay_vars <- df[, c("PAY_0", "PAY_2", "PAY_3", "PAY_4", "PAY_5", "PAY_6")]
+corr_matrix <- cor(pay_vars)
+
+corrplot(corr_matrix, method = "color", type = "upper", 
+         tl.col = "black", addCoef.col = "black", number.cex = 0.7,
+         col = colorRampPalette(c("blue", "white", "red"))(200))
+
+```
+```{r}
+df <- df %>% rename(BAD = `default.payment.next.month`)
+IV <- Information::create_infotables(data = df, y = "BAD", parallel = FALSE)
+print(IV$Summary)
+```
+```{r}
+# select vars of IV < 0.02
+vars_removed <- IV$Summary %>% 
+  as.data.frame() %>% 
+  subset(IV < 0.1 | IV > 0.5) %>% 
+  pull(1)
+
+vars_removed
+```
+```{r}
+data<- df %>% dplyr::select(-all_of(vars_removed))
+head(data)
+```
+
+```{r}
+ind <- sample(2, nrow(data), replace = TRUE, prob = c(0.7, 0.3))
+train.data <- data [ind == 1, ]
+test.data<- data [ind == 2, ]
+```
+```{r}
+bins <- woebin(train.data, y = "BAD")
+woebin_plot(bins)
+```
+```{r}
+train.data_woe <- woebin_ply(train.data, bins)
+```
+
+
+```{r}
+logit.model <- glm(BAD ~., family = binomial(link = 'logit'), data = train.data_woe)
+summary(logit.model)
+```
+```{r}
+logit.step <- step(logit.model, direction = "backward", trace = 0)
+summary(logit.step)
+```
+
+```{r}
+train.prob <- predict(logit.step, type = "response")
+train.pred <- ifelse(train.prob > .5, "1", "0")
+table.train<-table(train.pred, train.data$BAD)
+table.train
+
+```
+
+```{r}
+confusionMatrix.train<-prop.table(table.train)
+confusionMatrix.train
+```
+
+```{r}
+test.data_woe <- woebin_ply(test.data, bins)
+```
+
+```{r}
+test.pred.prob <- predict(logit.model, test.data_woe, type = 'response')
+test.pred<- as.factor(ifelse(test.pred.prob > 0.5, 1, 0))
+table.test<-table(test.pred, test.data$BAD)
+table.test
+```
+```{r}
+prop.table(table.test)
+```
+```{r}
+sensitivity(test.pred, test.data$BAD)
+```
+```{r}
+specificity(test.pred, test.data$BAD)
+```
+
+```{r}
+
+misClassError(test.pred, test.data$BAD, threshold=0.5)
+```
+
+```{r}
+# Logistic Regression ROC curve
+roc.pred <- prediction(predictions = test.pred.prob, labels = test.data$BAD)
+roc.perf <- performance(roc.pred, measure = "tpr", x.measure = "fpr")
+# Tính chỉ số AUROC
+AUROC_value <- roc.perf@y.values[[1]]
+auc <- as.numeric(performance(roc.pred, measure = "auc")@y.values)
+plot(roc.perf, main = "ROC Curve for credit risk Prediction Approaches", col = 2, lwd = 2)
+abline(a = 0, b = 1, lwd = 3, lty = 2, col = 1)
+```
+
+```{r}
+auc
+```
+
+
+```{r}
+gini <- 2*auc - 1
+gini
+```
+```{r}
+my_card <- scorecard(bins, logit.model, points0 = 600, odds0 = 1/19, pdo = 50)
+head(my_card)
+```
+
+```{r}
+z_score<-log(train.prob/(1-train.prob))
+head(z_score,10)
+```
+
+```{r}
+credit_score <-100+2*z_score
+hist(credit_score)
+head(credit_score)
+summary(credit_score)
+```
+```{r}
+logit<- glm(BAD ~., family = binomial(link = 'logit'), data = train.data)
+summary(logit)
+```
+```{r}
+train.prob1 <- predict(logit, type = "response")
+train.pred1 <- ifelse(train.prob1 > .5, "1", "0")
+table.train1<-table(train.pred1, train.data$BAD)
+table.train1
+```
+
+```{r}
+confusionMatrix.train1<-prop.table(table.train1)
+confusionMatrix.train1
+```
+
+```{r}
+test.pred.prob1 <- predict(logit, test.data, type = 'response')
+test.pred1<- as.factor(ifelse(test.pred.prob1 > 0.5, 1, 0))
+table.test1<-table(test.pred1, test.data$BAD)
+table.test1
+```
+```{r}
+# Logistic Regression ROC curve
+roc.pred1 <- prediction(predictions = test.pred.prob1, labels = test.data$BAD)
+roc.perf1 <- performance(roc.pred1, measure = "tpr", x.measure = "fpr")
+# Tính chỉ số AUROC
+AUROC_value1 <- roc.perf1@y.values[[1]]
+auc1 <- as.numeric(performance(roc.pred1, measure = "auc")@y.values)
+plot(roc.perf1, main = "ROC Curve for credit risk Prediction Approaches", col = 2, lwd = 2)
+abline(a = 0, b = 1, lwd = 3, lty = 2, col = 1)
+```
+
+```{r}
+auc1
+```
+
+```{r}
+gini1 <- 2*auc1 - 1
+gini1
+```
+
